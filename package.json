@@ -1,0 +1,11 @@
+{
+  "name": "notimpuesto",
+  "version": "1.0.0",
+  "description": "miniSis de Impuestos",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Edward Quintero (dwrdxiv)",
+  "license": "ISC"
+}
