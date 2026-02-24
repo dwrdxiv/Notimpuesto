@@ -71,7 +71,7 @@ function getTodaySeniat() {
         }
     })
     return terminalesdeHoy;
-}
+};
 
 function getAnyDateSeniat(diaSolicitado, mesSolicitado) {
     const mesNombre = mesesAnio[mesSolicitado - 1];
@@ -95,6 +95,12 @@ function getAnyDateSeniat(diaSolicitado, mesSolicitado) {
     return terminales;
 };
 
+function obtenerPeriodo(dia, mes){
+    const anio = new Date().getFullYear();
+    const quincena = dia <= 15 ? '2Q' : '1Q';
+    const mesFmt = mes.toString().padStart(2, '0');
+    return `${anio}-${mesFmt}-${quincena}`;
+}
 
 bot.start((ctx) => {
     if (!autorizados.includes(ctx.from.id.toString())) {
@@ -125,11 +131,15 @@ bot.command('seniat', (ctx) => {
     if (terminales.length === 0) {
         return ctx.reply(`No hay pagos de Seniat programados para el ${dia} de ${mesesAnio[mes - 1]}.`);
     }
-    const quincena = dia <= 15 ? '2da Quincena del 16 al 31' : '1era Quincena del 1 al 15';
 
-    const placeholders = terminales.map(() => '?').join(', ');
-    const sql = `SELECT razon_social, rif FROM clientes WHERE lastdigit IN (${placeholders}) AND condicion = 1`;
-    db.all(sql, terminales, (err, filas) => {
+    const periodo = obtenerPeriodo(dia, mes);
+    const terminalesNumericos = terminales.map(Number)
+    const placeholders = terminalesNumericos.map(() => '?').join(', ');
+    const parametros = [periodo, ...terminalesNumericos];
+    
+const sql = `SELECT c.id, c.razon_social, c.lastdigit, c.rif, c.condicion, d.estatus FROM clientes c LEFT JOIN declaraciones d ON c.id = d.cliente_id AND d.periodo = ? WHERE c.lastdigit IN (${placeholders}) AND c.condicion = 1`; //
+    
+    db.all(sql, parametros, (err, filas) => {
         if (err) {
             console.error('Error al consultar la base de datos:', err);
             ctx.reply('Lo siento, hubo un error al consultar los datos.');
@@ -139,19 +149,70 @@ bot.command('seniat', (ctx) => {
             ctx.reply(`Hoy ${fecha}\nNo se encontraron clientes para los terminales: ${terminales.join(', ')}.`);
             return;
         }
-        let reporte = `Seniat para el ${dia} de ${mesesAnio[mes - 1]}:\n`; reporte += `Terminales: ${terminales.join(', ')}\n${mesesAnio[mes - 1]} ${quincena}\n'IVA, IGTF y Anticipos de ISLR'\n\n`;
+
+        let reporte = `Seniat para el ${dia} de ${mesesAnio[mes - 1]}:\n`; reporte += `Terminales: ${terminales.join(', ')}\n${mesesAnio[mes - 1]} ${periodo}\nIVA, IGTF y Anticipos de ISLR\n\n`;
         filas.forEach(cliente => {
-            reporte += `${cliente.razon_social}\n`;
+            let emoji = '🔴';
+            if (cliente.status === 'declarado') emoji = '🟡';
+            if (cliente.status === 'pagado') emoji = '🟢';
+            reporte += `${cliente.id}) `;
+            reporte += `${cliente.razon_social} ${emoji}\n`;
             reporte += `RIF: ${cliente.rif}\n`;
             reporte += `-------------------------------------------------\n`
         });
-
-        ctx.reply(reporte).catch(err => {
+        ctx.reply(reporte, Markup.inlineKeyboard([[Markup.button.callback('¿Cambiar Status de un Cliente?', `preguntar_id_${periodo}`)]])).catch(err => {
             console.error('Error al enviar el mensaje:', err);
             ctx.reply('Lo siento, hubo un error al enviar los datos.');
+        });;
+
+    });
+});
+
+bot.action(/preguntar_id_(.+)/, (ctx) => {
+    const periodo = ctx.match[1];
+    ctx.reply(`Por favor, ingresa el ID del cliente para cambiar su status. en el periodo ${periodo}`).then(() => {
+        bot.on('text', (ctx) => {
+            const idCliente = parseInt(ctx.message.text);
+            if (isNaN(idCliente)) {
+                return ctx.reply('ID inválido. Por favor, ingresa un número válido.');
+            }
+            //Cambiar Status del Cliente
+            const sql = 'SELECT * FROM declaraciones WHERE clientes_id = ? AND periodo = ?';
+            const parametros2 = [idCliente, periodo];
+            db.get(sql, parametros2, (err, fila) => {
+                if (err) {
+                    console.error('Error al consultar la base de datos:', err);
+                    return ctx.reply('Lo siento, hubo un error al consultar los datos.');
+                }
+                if (!fila) {
+                    return ctx.reply('No se encontró una declaración para ese cliente en el periodo especificado.');
+                }
+                ctx.reply(`Selecciona el nuevo estatus para:\n${fila.clientes_id}\nPeriodo: ${fila.periodo}\nEstatus Actual: ${fila.status}`, 
+                Markup.inlineKeyboard([
+                    [Markup.button.callback('🔴 Pendiente', `st:pendiente:${idCliente}:${periodo}`)],
+                    [Markup.button.callback('🟡 Declarado', `st:declarado:${idCliente}:${periodo}`)],
+                    [Markup.button.callback('🟢 Pagado', `st:pagado:${idCliente}:${periodo}`)]
+                ]));
+            });
         });
     });
 });
+
+bot.action(/st:(.+):(.+):(.+)/, (ctx) => {
+    const [nuevoStatus, idCliente, periodo] = ctx.match.slice(1);
+    const sql = 'INSERT INTO declaraciones (clientes_id, periodo, status) VALUES (?, ?, ?) ON CONFLICT(clientes_id, periodo) DO UPDATE SET status = excluded.status';
+    db.run(sql, [nuevoStatus, idCliente, periodo], function(err) {
+        if (err) {
+            console.error('Error al actualizar la base de datos:', err);
+            return ctx.reply('Lo siento, hubo un error al actualizar los datos.');
+        }
+        if (this.changes === 0) {
+            return ctx.reply('No se encontró una declaración para ese cliente en el periodo especificado.');
+        }
+        ctx.reply(`Estatus actualizado a ${nuevoStatus} para el cliente ID ${idCliente} en el periodo ${periodo}.`);
+    });
+})
+
 
 bot.action('ConsultaHoy', (ctx) => {
     if (!autorizados.includes(ctx.from.id.toString())) {
